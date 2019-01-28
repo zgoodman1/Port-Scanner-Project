@@ -1,74 +1,51 @@
-# this is a pretty simple script used to get familiar with the socket library
-# and its uses with scanning ports
-# there will be a ridiculous amount of comments, you've been warned
+import time
+import multiprocessing
+import logging
+logging.getLogger("scapy.runtime").setLevel(logging.ERROR)
+from scapy.all import *
 
-# imports the socket module and everything within it, not great for computer
-# memory granted, but at the time of writing this program, I don't know
-# what will and won't be needed
-from socket import *
-
-# sys provides access to system specific functions, time is used to keep track
-# of how long a port scan takes, datetime is the mechanism of this
-import sys, time
-from datetime import datetime
+ip = "127.0.0.1"
+closed = 0
 
 
-# need the host address, port to start at and port to stop at
-host = ''
-min_port = 1
-max_port = 5
-
-# asks for input in the form of a url address or a direct IP address
-try:
-    host = input('[*] Enter Target Host Address: ')
-except KeyboardInterrupt:
-    print('[*] User requested interruption')
-    print('[*] System closing')
-    sys.exit()
-
-# next, we get the host by name, meaning we retrieve the IP address of the
-# input url or if the input was a direct IP, we retrieve that all the same
-hostIP = gethostbyname(host)
-
-# gets the current time when the program runs, to be used later to determine
-# overall runtime
-t1 = datetime.now()
+def scan(port):
+    closed = 0
+    global openp
+    src_port = RandShort()
+    p = IP(dst=ip)/TCP(sport=src_port, dport=port, flags='S')
+    resp = sr1(p, timeout=2)
+    if str(type(resp)) == "<type 'NoneType'>":
+        closed += 1
+    elif resp/haslayer(TCP):
+        if resp.getlayer(TCP).flags == 0x12:
+            send_rst = sr(IP(dst=ip))/TCP(sport=src_port, dport=port, flags='AR', timeout=1)
+            print("[*] %d open") % port
+        elif resp.getlayer(TCP).flags == 0x14:
+            closed += 1
+    return closed
 
 
-# scan_host function uses the socket function to try to connect to the target
-def scan_host(ahost, aport, r_code=1):
-    try:
-        s = socket(AF_INET, SOCK_STREAM)
-
-        code = s.connect_ex((ahost, aport))
-
-        if code == 0:
-            r_code = code
-        s.close()
-    except Exception:
-        pass
-
-    return r_code
+def is_up(ip):
+    p = IP(dst=ip)/ICMP()
+    resp = sr1(p, timeout=10)
+    if resp == None:
+        return False
+    elif resp.haslayer(ICMP):
+        return True
 
 
-# scanning, uses range function to iterate through all the ports we want,
-# min and max port, and uses the scan_host function, with the parameters
-# of the host ip address and the port in question of the IP, to determine
-# if a port is open or not, if a 0 is returned, the port is open, else the
-# port is closed
-# some exception handling involved as well, if an error is thrown, pass allows
-# the program to continue
-try:
-    for port in range(min_port, max_port):
-        response = scan_host(host, port)
-
-        if response == 0:
-            print('[*] Port %d: Open' % port)
-except Exception:
-    pass
-
-t2 = datetime.now()
-
-total = t2-t1
-
-print("Scan completed in: ", total)
+if __name__ == '__main__':
+    conf.verb = 0
+    start_time = time.time()
+    ports = range(1, 1024)
+    pool = multiprocessing.Pool(processes=multiprocessing.cpu_count()*10)
+    if is_up(ip):
+        print("Host %s is up, start scanning") %ip
+        results = [pool.apply_async(scan, (port)) for port in ports]
+        for result in filter(lambda i : i.get != None, results):
+            closed += result.get()[0]
+        duration = time.time() - start_time
+        print("%s Scan Completed in %fs") % (ip, duration)
+        print("%d closed ports in %d total port scanned") % (closed, len(ports))
+    else:
+        print("Host %s is Down") % ip
